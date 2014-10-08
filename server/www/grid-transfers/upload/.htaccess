@@ -4,7 +4,6 @@ KrbAuthRealms SDSC.EDU
 AuthName "DM-Host Keytabs"
 Require user host/oasis-dm1.sdsc.edu@SDSC.EDU host/oasis-dm2.sdsc.edu@SDSC.EDU host/oasis-dm3.sdsc.edu@SDSC.EDU host/oasis-dm4.sdsc.edu@SDSC.EDU host/trestles-dm1.sdsc.edu@SDSC.EDU host/trestles-dm2.sdsc.edu@SDSC.EDU ssakai@SDSC.EDU
 
-#Require user abe/http@SDSC.EDU
 KrbServiceName HTTP
 Krb5Keytab /etc/httpd/etc/keytab
 KrbSaveCredentials on

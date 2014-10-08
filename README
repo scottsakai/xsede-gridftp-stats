@@ -1,0 +1,203 @@
+README file for xsede-gridftp-stats
+
+Introduction
+------------
+
+These scripts represent a RESTful gridftp log collection and reporting
+architecture.  There are two main components:
+  1. (client) A shell script to submit gridftp_xfer logs using programs
+     likely to be present on the gridftp server host.
+
+  2. (server) A set of PHP scripts to receive the logs from the client, as
+     well as an interface to report the aggregate of the collected logs.
+
+This architecture was designed with the following goals in mind:
+  - On the client, leverage existing software that is commonly installed
+    by default on a gridftp server host.  The client script should not 
+    require additional software.
+
+  - The client may submit the same, or substantially same xfer logs.  Do not
+    create duplicate entries in the database.
+
+  - Avoid unnecessary transfer and server-side processing of repeat log data.
+
+  - The server should leverage Apache and PHP -- a commonly used software stack
+    with wide vendor support for updates.
+
+  - The client should be simple to run and simple to set up.  By simple, this
+    ideally means no install necessary beyond changing the REST URL.
+
+  - Keep it simple.
+
+
+Operational Overview - client
+-----------------------------
+1. The client script gets invoked with the path to a gridftp_xfer log file
+   as its first argument.
+
+2. The client creates a temporary working directory and chunks the log into
+   manageable pieces (~16MB each).
+
+3. For each chunk, the client:
+
+   3a. Computes the sha1 hash of the chunk's content.
+
+   3b. Submits the hash to the server to see if the server has already
+       processed the hash (from a previous invocation of the client).
+       The client will print out a '.' for each such chunk.
+ 
+   3c. Submits the chunk to the server if the server has not already
+       processed the hash from 3a.  The client will print out a '!' for
+       each such chunk.
+
+
+Operational Overview - server
+-----------------------------
+Hash check
+  1. The server PHP script processes a POST containing a value for 'sha1hash'
+     and no file upload.
+
+  2. The server connects to its RDBMS and queries for rows in the table
+     grid_transfers_hashes that contain the value of sha1hash.
+
+  3. If the RDBMS returns rows, it's safe to assume that the content has been
+     processed already.  The server returns HTTP status code 200 (OK).
+     The client script will interpret this a sign to skip to the next chunk.
+
+  4. If the RDBMS returns no rows, the server returns HTTP status code 
+     204 (no content).  The client script will interpret this as a sign to
+     proceed with a file upload.
+
+File upload
+  1. The server PHP script (upload/index.php) processes a POST containing 
+   a value for 'logfile' and an associated file upload. 
+   (Note: the actual filename in 'logfile' is discarded.)
+
+  2. The server calculates the sha1 hash of the uploaded content.
+
+  3. The server does the hash check described above using the hash in (2) as
+     the input.
+
+  4. If the RDBMS returns rows, the server discards the upload and returns 
+     HTTP status code 200.
+
+  5. If the RDBMS does not return rows, the server:
+
+     5a. Begins a transaction block with the RDBMS.
+
+     5b. Parses each line of the file upload and inserts a row to the
+         grid_transfers table in the RDBMS.
+
+     5c. Inserts the hash from (2) into the grid_transfers_hashes table.
+
+     5d. Commits the transaction.
+
+   6. If all goes well, the server returns HTTP status code 200 (OK).
+
+   7. Otherwise, the server returns HTTP status code 400 (bad request).
+
+Stats
+   1. The server PHP script (stats/index.php) takes a stat type and its
+      arguments from the URI. e.g. stats/xsede-quarterly/2014/4.
+
+      The currently supported stat types are:
+        xsede-quarterly/<year YYYY>/<quarter 1..4>
+
+   2. The server PHP script performs the desired analysis and emits JSON.
+
+
+Authentication of Server to Client
+----------------------------------
+The client script provided uses the CA trust anchors stored in
+/etc/grid-security/certificates.  This will authenticate an SSL session
+with a server with a certificate signed by an XSEDE-approved CA.
+
+
+Authentication of Client to Server
+----------------------------------
+The server script relies on Apache to perform the necessary authentication and
+authorization.  As provided, the client and server will negotiate Kerberos
+authentication using the host's /etc/krb5.keytab.  It just so happens that
+SDSC's hosts are in the SDSC kerberos realm, and this was more convenient than
+synchronizing the XSEDE CA trust anchors on the server host.
+
+The .htaccess file demonstrates an example of using mod_auth_kerb for this
+purpose.  Client x509 authentication or basic auth will work just as well.
+
+
+Client - Installation
+---------------------
+1. Edit the REST URL in the client script to point to the server.
+
+2. Invoke the client script with the log file to submit as its argument.
+
+3. If all goes well, you may want to set up cron or logrotate to do (2)
+   regularly.
+
+Note: The client script will require some editing if the authentication
+method is changed from Kerberos / negotiate.  These curl options may be useful: 
+  '--cert' for client certificate authentication 
+  '--netrc' and '--netrc-file' for basic authentication.
+
+
+Server - Installation
+---------------------
+RDBMS
+  You'll need some sort of RDBMS that contains the tables and columns 
+  described in server/db-schema/gridtransfers.txt.  This file will create
+  the necessary data structures in PostgreSQL.  You're on your own if you
+  want to use a different RDBMS.
+
+SW Stack
+  The server scripts assume a web server that can run PHP and handle 
+  the authentication and authorization you want to use.  
+  
+  The PHP scripts use PDO, and are known to work with PostgreSQL.  
+  They make use of some PG-specific constructs, so use with other RDBMSs 
+  may require tweaking.  In particular, the stats/index.php script uses 
+  PostgreSQL for date manipulation and column array-values.
+
+  Make sure PHP, PDO, and the necessary RDBMS client libraries are present 
+  and working so that a PHP script invoked by the web server can establish 
+  an authenticated connection to the RDBMS.
+
+  Suggested configuration: (RHEL6 has packages with these components)
+    Apache HTTPD
+      mod_auth_kerb
+      mod_ssl
+      mod_php
+    PHP
+      PDO
+      PDO-pgsql
+  
+Populating Tables
+  grid_xsede_addrs - table of xsede resources and the IPs of their gridftp 
+  endpoints.  This is used to determine which XSEDE resource was on the
+  remote end of each transfer.
+
+    sitename - set to <site>_<resource>. 
+      e.g. sdsc_trestles
+
+    hosts - set to an array of addresses associated with sitename's gridftp 
+      endpoints.  
+      e.g. {198.202.119.249,198.202.119.250}
+
+  grid_transfers_ignore - table of usernames to exclude from stats. Not
+  used yet, as none of the stats identify individual users.
+
+
+DSN File
+  The stats and upload scripts require_once() a PHP script:
+    /var/secrets/grid-transfers-db.php
+
+  This script should be readable only by root and the web server user.
+
+  It must define() the following macros:
+    define('DB_DSN',  'pgsql:host=yourdbhost.example.com;dbname=yourdbname');
+    define('DB_USER', 'gridxfer_load');
+    define('DB_PASS', '_SCRUBBED_PASSWORD_');
+  
+  This information is kept separate from the scripts to avoid inadvertently
+  publishing it.
+
+
