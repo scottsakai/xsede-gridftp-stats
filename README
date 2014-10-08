@@ -186,7 +186,6 @@ Populating Tables
   grid_transfers_ignore - table of usernames to exclude from stats. Not
   used yet, as none of the stats identify individual users.
 
-
 DSN File
   The stats and upload scripts require_once() a PHP script:
     /var/secrets/grid-transfers-db.php
@@ -201,4 +200,7 @@ DSN File
   This information is kept separate from the scripts to avoid inadvertently
   publishing it.
 
-
+URL Rewriting
+  The stats script relies on the httpd to rewrite URLs and treat directories 
+  in stats/ as arguments to index.php, rather than actual directory names.
+  The stats/.htaccess file will work with Apache.
