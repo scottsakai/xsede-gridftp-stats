@@ -1,0 +1,103 @@
+#!/bin/bash
+# submit-gridftp-log
+#
+# submits log to REST endpoint. uses host's keytab for authentication
+
+# URL to submit to?
+RESTURL='https://scott.sdsc.edu/grid-transfers/upload/index.php'
+
+# keytab file to authenticate with?
+KEYTAB=/etc/krb5.keytab
+
+# base for temp files
+TEMPBASE=/dev/shm
+
+# set path to something sane
+PATH=/usr/local/bin:/usr/local/sbin:/bin:/sbin:/usr/bin:/usr/sbin
+
+# set umask to something sane too
+umask 0077
+
+# Check input
+if [[ "$1" == '' || ! -r "$1" ]]; then
+  echo "Usage: $0 <gridftp xfer log file>" 1>&2
+  exit 1
+fi
+
+# Check privs
+if [[ ! -r ${KEYTAB} ]]; then
+  echo "Unable to read ${KEYTAB}" 1>&2
+  exit 2
+fi
+
+# get a ticket
+kinit -k -t ${KEYTAB} 
+if [[ $? -ne 0 ]]; then
+  echo "Unable to kinit" 1>&2 
+  exit 3
+fi
+
+# Okay, crud. the file may be huge. break it into smaller chunks
+# split into multiple files, in TEMPDIR
+TEMPDIR=$( mktemp -d ${TEMPBASE}/submit-gridftp-log-XXXXXXXX )
+if [[ "${TEMPDIR}" == '' ]]; then
+  echo "Failed to create temporary directory in ${TEMPBASE}" 1>&2
+  exit 4
+fi
+
+cd ${TEMPDIR}
+split -l 50000 $1
+
+# do stuff - send each file
+for I in ${TEMPDIR}/*; do
+  #echo -n '.'
+
+  # calculate a sha1sum of the file...
+  HASH=$( sha1sum $I | awk '{print $1}' )
+  if [[ "${HASH}" == '' ]]; then
+    echo "Failed to compute sha1sum for $I" 1>&2
+    continue
+  fi 
+
+  # check if the endpoint has seen the hash already. skip if so
+  # note: curl returns 0 even if stuff blew up. capture the http status code
+  RES=$( curl --negotiate -u ':' \
+    --capath /etc/grid-security/certificates/ \
+    --form sha1hash=${HASH} \
+    -w "%{http_code}\n" \
+    -s \
+    ${RESTURL} )
+  if [[ ${RES} == "200" ]]; then
+    #echo "Already seen ${HASH}"
+    echo -n '.'
+    continue
+  else
+    echo -n '!'
+  fi
+  
+  # submit for processing
+  RES=$( curl --negotiate -u ':'  \
+    --capath /etc/grid-security/certificates/ \
+    --form logfile=@$I  \
+    -w "%{http_code}\n" \
+    -s \
+     ${RESTURL} )
+  if [[ ${RES} != "200" ]]; then
+    echo "Did not successfully send $1. See apache logs on ${RESTURL}." 1>&2
+    exit 4
+  fi
+done
+
+# done with ticket
+kdestroy 
+if [[ $? -ne 0 ]]; then
+  echo "Unable to destroy ticket cache" 1>&2 
+  exit 5
+fi
+
+# done with temp dir
+cd /
+rm -rf ${TEMPDIR}
+
+# done?
+echo `hostname` done.

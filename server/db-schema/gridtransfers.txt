@@ -1,0 +1,106 @@
+-- create the gridxfer_load user
+ create role gridxfer_load;
+ alter role gridxfer_load with login;
+ alter role gridxfer_load with password _SCRUBBED_PASSWORD_;
+
+-- grid_transfers table stores a row for each transfer
+-- protocol can be used to differentiate between different services
+-- e.g. gridftp vs scp
+CREATE TABLE grid_transfers (
+  start_time	timestamp with time zone,
+  end_time	timestamp with time zone,
+  protocol	varchar(32),
+  server_hostname	varchar(255),
+  dest_hosts	inet[],
+  username	varchar(32),
+  client_software	varchar(255),
+  nl_event	varchar(32),
+  filename	text,
+  buffer	bigint,
+  block		bigint,
+  bytes		bigint,
+  volume	text,
+  streams	int,
+  stripes	int,
+  type		varchar(32),
+  code		int
+);
+
+grant insert on grid_transfers to gridxfer_load;
+
+CREATE INDEX grid_transfers_index1 ON grid_transfers
+(
+  start_time,
+  end_time,
+  username,
+  server_hostname
+);
+
+
+-- this rule prevents the insertion of duplicate entries
+-- note that a client can submit the same file multiple times
+-- pg doesn't support ignoring an insert on a unique constraint
+-- violation, so, here we are.
+CREATE OR REPLACE RULE grid_transfers_ignore_duplicates
+  AS ON INSERT TO grid_transfers 
+  where (exists ( select 1 from grid_transfers t where 
+    t.start_time = new.start_time and
+    t.end_time = new.end_time and
+    t.username = new.username and
+    t.filename = new.filename and
+    t.bytes    = new.bytes    and
+    t.code     = new.code     and
+    t.server_hostname = new.server_hostname and
+    new.dest_hosts = t.dest_hosts))
+  DO INSTEAD NOTHING;
+
+
+-- input hashes as seen by the REST interface
+-- used to help prevent inserting previously inserted files
+-- a client can check if a given file (chunk) has already been
+-- submitted.  this makes things go fast when running on a log file
+-- that has substantially not changed since the last run.
+CREATE TABLE grid_transfers_hashes
+(
+  start_time	timestamp with time zone,
+  sha1hash	varchar(40)
+);
+
+GRANT INSERT on grid_transfers_hashes to gridxfer_load;
+GRANT SELECT on grid_transfers_hashes to gridxfer_load;
+
+CREATE INDEX grid_transfers_hashes_hash_index ON grid_transfers_hashes
+(
+  sha1hash
+);
+
+
+-- similarly, we don't want duplicates in the hashes table
+CREATE OR REPLACE RULE grid_transfers_hashes_ignore_duplicates
+  AS ON INSERT TO grid_transfers_hashes
+  where (exists (select 1 from grid_transfers_hashes t where
+    t.sha1hash = new.sha1hash))
+  DO INSTEAD NOTHING;
+
+
+-- industrial users we want to filter out of logs
+CREATE TABLE grid_users_ignore
+(
+  created	timestamp with time zone default now(),
+  username	varchar(32),
+  remarks	text
+);
+CREATE INDEX grid_users_ignore_users ON grid_users_ignore
+(
+  username
+);
+
+
+-- XSEDE sites
+CREATE TABLE grid_xsede_addrs
+(
+  created	timestamp with time zone default now(),
+  hosts		inet[],
+  sitename	text
+);
+
