@@ -150,7 +150,8 @@ RDBMS
 
 SW Stack
   The server scripts assume a web server that can run PHP and handle 
-  the authentication and authorization you want to use.  
+  the authentication and authorization you want to use.  The server
+  should also support URL rewriting to support pseudo-directories.
   
   The PHP scripts use PDO, and are known to work with PostgreSQL.  
   They make use of some PG-specific constructs, so use with other RDBMSs 
